@@ -55,7 +55,10 @@ services:
       tika:
         condition: service_started
     ports:
-      - "8000:8000"
+      # Localhost only: on a server, expose it through Tailscale (tailscale serve),
+      # never directly (published ports can bypass the host firewall:
+      # ufw/firewalld with rootful Docker).
+      - "127.0.0.1:8000:8000"
     volumes:
       - data:/usr/src/paperless/data
       - media:/usr/src/paperless/media
@@ -70,9 +73,10 @@ services:
       PAPERLESS_DBUSER: paperless
       PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
       PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?set PAPERLESS_SECRET_KEY in .env}
-      PAPERLESS_URL: http://localhost:8000
+      # Set to the Tailscale address on a server, e.g. https://vps.tailnet-name.ts.net
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://localhost:8000}
       # PAPERLESS_URL alone limits Django to "localhost"; paperless-ai and paperless-mcp call http://paperless:8000
-      PAPERLESS_ALLOWED_HOSTS: localhost,paperless
+      PAPERLESS_ALLOWED_HOSTS: ${PAPERLESS_ALLOWED_HOSTS:-localhost,paperless}
       PAPERLESS_TIME_ZONE: America/Toronto
       PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER:-admin}
       PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD:?set PAPERLESS_ADMIN_PASSWORD in .env}
@@ -103,7 +107,8 @@ services:
     image: docker.io/clusterzx/paperless-ai:4.5.2
     restart: unless-stopped
     depends_on:
-      - paperless
+      paperless:
+        condition: service_healthy   # wait until Paperless answers (after a reboot it starts last)
     ports:
       - "127.0.0.1:3001:3000"  # 3000 is paperless-mcp
     volumes:
@@ -150,13 +155,14 @@ services:
     image: ghcr.io/baruchiro/paperless-mcp:2.3.0
     restart: unless-stopped
     depends_on:
-      - paperless
+      paperless:
+        condition: service_healthy   # wait until Paperless answers (after a reboot it starts last)
     ports:
       - "127.0.0.1:3000:3000"
     environment:
       TZ: America/Toronto
       PAPERLESS_URL: http://paperless:8000
-      PAPERLESS_PUBLIC_URL: http://localhost:8000
+      PAPERLESS_PUBLIC_URL: ${PAPERLESS_URL:-http://localhost:8000}
       PAPERLESS_API_KEY: ${PAPERLESS_API_TOKEN:-}
       # post_document can also read a file by path inside this container;
       # pointing it at an empty dir leaves base64 uploads as the only way in.
