@@ -7,7 +7,8 @@ Creates (or updates) through the REST APIs:
   - group: employees (view/add/change, no delete), see scripts/add-employee.sh
   - workflow: every consumed document gets the receipt tag and is shared with
     the employees group; existing documents are shared too
-  - mail account + 2 mail rules (only if MAIL_IMAP_SERVER is set in .env)
+  - mail rules on an IMAP account (MAIL_IMAP_SERVER) or on an Outlook/Gmail
+    account connected in the UI (MAIL_ACCOUNT); skipped if neither is set
 
 Usage:  python3 setup.py            (reads ./.env)
 Only the standard library is used.
@@ -228,26 +229,42 @@ def ensure_imap_folder(host, port, user, password, folder):
         print(f"  created  IMAP folder {folder}" if typ == "OK" else f"  WARNING could not create {folder}: {data}")
 
 
-def setup_mail(tag_ids):
+def mail_account():
+    """Option B: IMAP + password account from .env. Option A: an OAuth account
+    (Outlook/Gmail) already connected in the Paperless UI, picked by MAIL_ACCOUNT."""
     host = ENV.get("MAIL_IMAP_SERVER")
-    if not host:
-        print("Mail: MAIL_IMAP_SERVER not set in .env, skipped")
+    if host:
+        port = int(ENV.get("MAIL_IMAP_PORT", "993"))
+        user, password = ENV["MAIL_USERNAME"], ENV["MAIL_PASSWORD"]
+        ensure_imap_folder(host, port, user, password, PROCESSED)
+        return upsert("mail_accounts/", "Receipts mailbox", {
+            "imap_server": host,
+            "imap_port": port,
+            "imap_security": 2,        # SSL
+            "username": user,
+            "password": password,
+            "character_set": "UTF-8",
+            "account_type": 1,         # IMAP
+        }, compare_keys=["imap_server", "imap_port", "username"])
+    wanted = ENV.get("MAIL_ACCOUNT", "").strip().lower()
+    if not wanted:
+        return None
+    for acct in all_items("mail_accounts/"):
+        if wanted in (acct["name"].lower(), acct["username"].lower()):
+            print(f"  ok       mail_accounts/{acct['name']} (connected in the UI)")
+            print(f"  NOTE     the folder {PROCESSED} must exist in that mailbox")
+            return acct
+    sys.exit(f"MAIL_ACCOUNT={wanted}: no such mail account in Paperless. "
+             "Connect it first: Paperless > Mail > Add account > Connect with Outlook.")
+
+
+def setup_mail(tag_ids):
+    if not (ENV.get("MAIL_IMAP_SERVER") or ENV.get("MAIL_ACCOUNT")):
+        print("Mail: MAIL_IMAP_SERVER / MAIL_ACCOUNT not set in .env, skipped")
         return
     print("Mail")
-    port = int(ENV.get("MAIL_IMAP_PORT", "993"))
-    user, password = ENV["MAIL_USERNAME"], ENV["MAIL_PASSWORD"]
+    acct = mail_account()
     folder = ENV.get("MAIL_FOLDER", "INBOX")
-    ensure_imap_folder(host, port, user, password, PROCESSED)
-
-    acct = upsert("mail_accounts/", "Receipts mailbox", {
-        "imap_server": host,
-        "imap_port": port,
-        "imap_security": 2,        # SSL
-        "username": user,
-        "password": password,
-        "character_set": "UTF-8",
-        "account_type": 1,         # IMAP
-    }, compare_keys=["imap_server", "imap_port", "username"])
 
     common = {
         "account": acct["id"],

@@ -98,6 +98,9 @@ services:
       PAPERLESS_AI_ENABLED: "false"
       # Check the mailbox every 5 minutes instead of 10.
       PAPERLESS_EMAIL_TASK_CRON: "*/5 * * * *"
+      # Microsoft 365 / Outlook mail through OAuth (Entra app registration, see .env.example)
+      PAPERLESS_OUTLOOK_OAUTH_CLIENT_ID: ${OUTLOOK_OAUTH_CLIENT_ID:-}
+      PAPERLESS_OUTLOOK_OAUTH_CLIENT_SECRET: ${OUTLOOK_OAUTH_CLIENT_SECRET:-}
 
   # paperless-ai (http://localhost:3001): reads each new document's text and has
   # Claude fill the title, correspondent, date and custom fields. Runs every 5 min
