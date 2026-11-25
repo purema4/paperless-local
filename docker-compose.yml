@@ -1,0 +1,170 @@
+# Paperless-ngx + paperless-ai (Claude) + MCP server.
+# Reset everything: docker compose down -v
+
+name: paperless-local
+
+services:
+  db:
+    image: docker.io/library/postgres:16.16-bookworm
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      TZ: America/Toronto
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperless -d paperless"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: docker.io/library/redis:7.4.12-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+
+  gotenberg:
+    image: docker.io/gotenberg/gotenberg:8.40.0
+    restart: unless-stopped
+    # Same hardening as Paperless's own compose: .eml files are rendered by
+    # Chromium, so no JavaScript and no remote content (tracking pixels).
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+      - "--chromium-allow-list=^file:///tmp/.*"
+    mem_limit: 768m
+
+  tika:
+    image: docker.io/apache/tika:3.3.1.0
+    restart: unless-stopped
+    mem_limit: 768m
+
+  paperless:
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.5.1
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      gotenberg:
+        condition: service_started
+      tika:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/usr/src/paperless/data
+      - media:/usr/src/paperless/media
+      # Absolute path in .env so the stack also works when this file is loaded
+      # from GitHub or a registry (relative paths would point into Docker's cache).
+      - ${CONSUME_DIR:-./consume}:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_DBUSER: paperless
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?set PAPERLESS_SECRET_KEY in .env}
+      PAPERLESS_URL: http://localhost:8000
+      # PAPERLESS_URL alone limits Django to "localhost"; paperless-ai and paperless-mcp call http://paperless:8000
+      PAPERLESS_ALLOWED_HOSTS: localhost,paperless
+      PAPERLESS_TIME_ZONE: America/Toronto
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER:-admin}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD:?set PAPERLESS_ADMIN_PASSWORD in .env}
+      # French is already in the image (eng, deu, ita, spa, fra), so
+      # PAPERLESS_OCR_LANGUAGES=fra is not needed (it would apt-install at every start).
+      PAPERLESS_OCR_LANGUAGE: fra+eng
+      # Auto-rotate upside-down/sideways scans even when Tesseract is only
+      # moderately sure (default threshold 12 skips many phone photos).
+      PAPERLESS_OCR_ROTATE_PAGES_THRESHOLD: "6"
+      PAPERLESS_CONSUMER_RECURSIVE: "true"
+      # Since 3.0 duplicates are accepted by default; this restores the
+      # "same checksum = skip" safety net.
+      PAPERLESS_CONSUMER_DELETE_DUPLICATES: "true"
+      PAPERLESS_FILENAME_FORMAT: "{{ created_year }}/{{ correspondent }}/{{ created }} {{ title }}"
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      # Built-in AI stays off: it only speaks OpenAI-compatible/Ollama.
+      PAPERLESS_AI_ENABLED: "false"
+      # Check the mailbox every 5 minutes instead of 10.
+      PAPERLESS_EMAIL_TASK_CRON: "*/5 * * * *"
+
+  # paperless-ai (http://localhost:3001): reads each new document's text and has
+  # Claude fill the title, correspondent, date and custom fields. Runs every 5 min
+  # on every document it hasn't processed yet. Settings set here are locked in
+  # its web UI; anything else (prompt, OCR page, history) is managed there.
+  paperless-ai:
+    image: docker.io/clusterzx/paperless-ai:4.5.2
+    restart: unless-stopped
+    depends_on:
+      - paperless
+    ports:
+      - "127.0.0.1:3001:3000"  # 3000 is paperless-mcp
+    volumes:
+      - paperless-ai-data:/app/data
+    environment:
+      TZ: America/Toronto
+      PAPERLESS_API_URL: http://paperless:8000
+      PAPERLESS_API_TOKEN: ${PAPERLESS_API_TOKEN:-}
+      AI_PROVIDER: anthropic
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: claude-sonnet-5-5
+      # Process every document (not only tagged ones); it remembers what it did.
+      PROCESS_PREDEFINED_DOCUMENTS: "no"
+      SCAN_INTERVAL: "*/5 * * * *"
+      ADD_AI_PROCESSED_TAG: "yes"
+      AI_PROCESSED_TAG_NAME: paperless-ai-done
+      # No AI tags or document types (the workflow tags receipts); fill the custom fields.
+      ACTIVATE_TAGGING: "no"
+      ACTIVATE_DOCUMENT_TYPE: "no"
+      ACTIVATE_CUSTOM_FIELDS: "yes"
+      # Fields the AI fills (3.x JSON format; names must match Paperless).
+      CUSTOM_FIELDS: >-
+        {"custom_fields": [
+          {"value": "Total", "data_type": "monetary", "currency": "CAD"},
+          {"value": "GST", "data_type": "monetary", "currency": "CAD"},
+          {"value": "QST", "data_type": "monetary", "currency": "CAD"},
+          {"value": "Card last 4", "data_type": "string"},
+          {"value": "Category", "data_type": "select"},
+          {"value": "Paid by", "data_type": "select"},
+          {"value": "Event", "data_type": "string"}
+        ]}
+      # Local OCR (PaddleOCR) re-reads documents whose Tesseract text is poor
+      # (phone photos, crumpled receipts) and writes the better text back to Paperless.
+      OCR_ENABLED: "yes"
+      OCR_MODE: poor
+      OCR_WRITE_BACK: "yes"
+      OCR_LANGUAGE: latin
+
+  # MCP server: lets an LLM agent (Claude Code, Claude Desktop...) search,
+  # read and upload documents. Streamable HTTP at http://localhost:3000/mcp.
+  # Every request needs "Authorization: Bearer <Paperless API token>", which is
+  # passed through to Paperless, so the agent gets that user's permissions.
+  paperless-mcp:
+    image: ghcr.io/baruchiro/paperless-mcp:2.3.0
+    restart: unless-stopped
+    depends_on:
+      - paperless
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TZ: America/Toronto
+      PAPERLESS_URL: http://paperless:8000
+      PAPERLESS_PUBLIC_URL: http://localhost:8000
+      PAPERLESS_API_KEY: ${PAPERLESS_API_TOKEN:-}
+      # post_document can also read a file by path inside this container;
+      # pointing it at an empty dir leaves base64 uploads as the only way in.
+      PAPERLESS_MCP_UPLOAD_PATHS: /uploads
+
+volumes:
+  pgdata:
+  redisdata:
+  data:
+  media:
+  paperless-ai-data:
