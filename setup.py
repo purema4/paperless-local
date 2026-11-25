@@ -4,7 +4,9 @@
 Creates (or updates) through the REST APIs:
   - tag: receipt
   - custom fields: Total, GST, QST, Paid by, Card last 4, Category, Event
-  - workflow: every consumed document gets the receipt tag
+  - group: employees (view/add/change, no delete), see scripts/add-employee.sh
+  - workflow: every consumed document gets the receipt tag and is shared with
+    the employees group; existing documents are shared too
   - mail account + 2 mail rules (only if MAIL_IMAP_SERVER is set in .env)
 
 Usage:  python3 setup.py            (reads ./.env)
@@ -136,8 +138,50 @@ def setup_custom_fields():
     return ids
 
 
+# ---------------------------------------------------------------- employees group
+GROUP = "employees"
+# view/add/change, never delete. uisettings lets them use the web UI.
+GROUP_MODELS = ["document", "tag", "correspondent", "documenttype", "storagepath",
+                "customfield", "note", "savedview", "uisettings"]
+GROUP_PERMS = sorted(f"{a}_{m}" for m in GROUP_MODELS for a in ("view", "add", "change")) \
+    + ["view_paperlesstask"]
+
+
+def setup_group():
+    print("Group")
+    existing = {o["name"]: o for o in all_items("groups/")}
+    if GROUP in existing:
+        g = existing[GROUP]
+        if sorted(g.get("permissions", [])) != sorted(GROUP_PERMS):
+            api("PATCH", f"groups/{g['id']}/", {"permissions": GROUP_PERMS})
+            print(f"  updated  groups/{GROUP}")
+        else:
+            print(f"  ok       groups/{GROUP}")
+        return g["id"]
+    g = api("POST", "groups/", {"name": GROUP, "permissions": GROUP_PERMS})
+    print(f"  created  groups/{GROUP}")
+    return g["id"]
+
+
+def share_existing_documents(group_id):
+    """Give the group view+change on every document (merged with current permissions)."""
+    ids = []
+    url = f"{PAPERLESS}/api/documents/?page_size=100&fields=id"
+    while url:
+        page = call("GET", url)
+        ids += [d["id"] for d in page["results"]]
+        url = page.get("next")
+    if ids:
+        perms = {"view": {"users": [], "groups": [group_id]},
+                 "change": {"users": [], "groups": [group_id]}}
+        api("POST", "documents/bulk_edit/", {
+            "documents": ids, "method": "set_permissions",
+            "parameters": {"set_permissions": perms, "merge": True}})
+    print(f"  shared   {len(ids)} documents with {GROUP}")
+
+
 # ---------------------------------------------------------------- workflow
-def setup_workflow(tag_ids):
+def setup_workflow(tag_ids, group_id):
     print("Workflow")
     body = {
         "order": 0,
@@ -150,6 +194,8 @@ def setup_workflow(tag_ids):
         "actions": [{
             "type": 1,                 # assignment
             "assign_tags": [tag_ids["receipt"]],
+            "assign_view_groups": [group_id],
+            "assign_change_groups": [group_id],
         }],
     }
     existing = {o["name"]: o for o in all_items("workflows/")}
@@ -241,7 +287,9 @@ def main():
         sys.exit("PAPERLESS_API_TOKEN is empty in .env")
     tags = setup_tags()
     setup_custom_fields()
-    setup_workflow(tags)
+    group = setup_group()
+    setup_workflow(tags, group)
+    share_existing_documents(group)
     setup_mail(tags)
     print("done")
 

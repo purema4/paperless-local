@@ -2,3 +2,5 @@
 consume/*
 !consume/.gitkeep
 __pycache__/
+claude-desktop/dist/
+claude-desktop/node_modules/

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "paperless",
+  "display_name": "Paperless (reçus)",
+  "version": "1.1.0",
+  "description": "Chercher, lire et ajouter des reçus et factures dans Paperless (fichiers de l'ordinateur inclus).",
+  "long_description": "Connecte Claude au serveur MCP de Paperless-ngx. Le serveur n'est joignable que par Tailscale : Tailscale doit être installé et connecté sur cet ordinateur.",
+  "author": {
+    "name": "paperless-local"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/purema4/paperless-local"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/index.js",
+        "${user_config.upload_dirs}"
+      ],
+      "env": {
+        "PAPERLESS_MCP_URL": "${user_config.server_url}",
+        "PAPERLESS_TOKEN": "${user_config.api_token}"
+      }
+    }
+  },
+  "user_config": {
+    "api_token": {
+      "type": "string",
+      "title": "Token Paperless",
+      "description": "Ton token personnel, donné par l'administrateur.",
+      "sensitive": true,
+      "required": true
+    },
+    "server_url": {
+      "type": "string",
+      "title": "Adresse du serveur MCP",
+      "description": "Ne pas changer sauf indication contraire.",
+      "default": "__SERVER_URL__",
+      "required": true
+    },
+    "upload_dirs": {
+      "type": "directory",
+      "title": "Dossiers pour l'envoi de fichiers",
+      "description": "Dossiers d'où Claude peut envoyer des fichiers à Paperless. Vide = Téléchargements, Documents, Bureau, Images et Claude.",
+      "multiple": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "win32",
+      "darwin"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "license": "MIT",
+  "tools": [
+    {
+      "name": "upload_local_files",
+      "description": "Envoie des fichiers de cet ordinateur dans Paperless"
+    },
+    {
+      "name": "search_documents",
+      "description": "Recherche dans Paperless (et tous les autres outils de paperless-mcp)"
+    }
+  ]
+}
